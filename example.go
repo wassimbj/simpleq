@@ -7,30 +7,6 @@ import (
 	"github.com/go-redis/redis/v8"
 )
 
-/*
-	import me/buffalo
-
-
-	welcomeEmailQueue := buffalo.NewQueue("queue_name")
-
-	welcomeEmailQueue.process(func(job Job){
-		...
-	})
-
-	welcomeEmailQueue.add("data...")
-
-*/
-
-// type Test struct {
-// 	done chan struct{}
-// }
-
-// func (t *Test) neww() *Test {
-// 	return &Test{
-// 		done: make(chan struct{}, 1),
-// 	}
-// }
-
 func createQueue(name string) *Queue {
 	return NewQueue(name, QueueOpts{
 		client: redis.NewClient(&redis.Options{
