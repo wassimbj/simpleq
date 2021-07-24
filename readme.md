@@ -21,7 +21,7 @@ emailsQueue.process(func(job interface{}) error {
    emailsQueue.add("welcome email")
    emailsQueue.add("delayed job, will exec after 7 sec", JobOpts{
       delay: int64((time.Second * 7) / time.Millisecond),
+   })
 // })
-})
 
 ```
