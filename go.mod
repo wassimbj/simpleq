@@ -1,4 +1,4 @@
-module github.com/wassimbj/playground/gomq
+module github.com/wassimbj/simpleq
 
 go 1.16
 
