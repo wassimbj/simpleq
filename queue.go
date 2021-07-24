@@ -23,14 +23,16 @@ import (
 ?                   -- > delayed	  	  \
 *													--> completed => remove the job
 
-!PLAN
-* jobs are processed at least once
+! Functionalities
+* *$jobs are processed at least once
 * no need for failed queue, just if a job failed re-queue it back to be processed again
 * if a job completes successfully remove it
 * check each 2 seconds on redis, if something is wrong, stop everything
 * each time we get a new job to process, we check for the delayed queue...
 *...if the job time is equal to the current or its passed we move it the active
-* a cron job is a delayed job that just doesn't get deleted...
+
+! TODO:
+* Cron Job: a cron job is a delayed job that just doesn't get deleted (if user wants to ofc)...
 *...it gets requeued over and over again with a new timestamp
 
 */
@@ -207,34 +209,26 @@ func (q *Queue) add(data interface{}, opts ...JobOpts) {
 	}
 
 	go func() {
-		// defer q.wg.Done()
 		if ops.delay == 0 {
 			lcmd := q.opts.client.RPush(q.ctx, queueName(q.name).active, dataToInsert)
-			// fmt.Println("Rpushed job: ", ops.delay, data)
 			if lcmd.Err() != nil {
 				log.Println("RPush Error: ", lcmd.Err().Error())
 				return
 			}
-			// log.Println("Rpush Res: ", lcmd.Val())
-			// return
 		} else {
 			zcmd := q.opts.client.ZAdd(q.ctx, queueName(q.name).delayed, &redis.Z{
 				Score:  float64(delay),
 				Member: dataToInsert[0],
 			})
-			// fmt.Println("Zadded job: ", delay, data)
 			if zcmd.Err() != nil {
 				log.Println("Zadd Error: ", zcmd.Err().Error())
 				return
 			}
-			// log.Println("Zadd Res: ", zcmd.Val())
-			// return
 		}
 	}()
 }
 
 // Private methods
-
 func newUuid() string {
 	id := uuid.New()
 	return id.String()
