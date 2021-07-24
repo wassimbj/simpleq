@@ -10,7 +10,7 @@ go get https://github.com/wassimbj/simpleq
 ```
 
 
-### Example:
+### Example
 
 [a better one](https://github.com/wassimbj/simpleq/blob/master/example.md)
 
@@ -36,3 +36,9 @@ emailsQueue.process(func(job interface{}) error {
 // })
 
 ```
+
+### TODO
+
+- [ ] Add Cron Jobs
+- [ ] Add Priorities
+- [ ] Rate limiter for jobs
