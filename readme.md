@@ -1,7 +1,18 @@
 
 **If you want to know how something works, build it by yourself, --me**
 
-i just built this project for learning purposes only, but if you like the simplicity of the usage, why not take it from here.
+I just built this project for learning, but if you like the simplicity why not give a hand.
+
+### Install
+
+```bash
+go get https://github.com/wassimbj/simpleq
+```
+
+
+### Example:
+
+[a better one](https://github.com/wassimbj/simpleq/blob/master/example.md)
 
 ```go
 
