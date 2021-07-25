@@ -1,7 +1,5 @@
 
-**If you want to know how something works, build it by yourself, --me**
-
-I just built this project for learning, but if you like the simplicity why not give a hand.
+**I just built this project for learning, but if you like the simplicity why not give a hand.**
 
 ### Install
 
