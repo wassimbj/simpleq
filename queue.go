@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -23,17 +24,18 @@ import (
 ?                   -- > delayed	  	  \
 *													--> completed => remove the job
 
-! Functionalities
-* *$jobs are processed at least once
-* no need for failed queue, just if a job failed re-queue it back to be processed again
-* if a job completes successfully remove it
-* check each 2 seconds on redis, if something is wrong, stop everything
-* each time we get a new job to process, we check for the delayed queue...
-*...if the job time is equal to the current or its passed we move it the active
+! How everything works
+- Jobs are processed at least once.
+- if job is completed, remove it
+- failed queue is for stats, maybe implement it in the futute.if job fail re-queue to the active queue.
+- check redis each 2 seconds, if something is wrong stop everything.
+- run a for loop to check for new jobs to process, and at the same time check for delayed job,
+if there is one put it in the active queue to process it.
+
 
 ! TODO:
-* Cron Job: a cron job is a delayed job that just doesn't get deleted (if user wants to ofc)...
-*...it gets requeued over and over again with a new timestamp
+- Cron Job: a cron job is simply a delayed job that just doesn't get deleted,
+it gets requeued over and over again with a new timestamp.
 
 */
 
@@ -42,13 +44,15 @@ type QueueOpts struct {
 }
 
 type Queue struct {
-	name string
-	done chan struct{}
-	// stop when there is a system error
-	stop chan error
-	ctx  context.Context
-	opts QueueOpts
-	// wg   sync.WaitGroup
+	name        string
+	workerLimit int
+	// stop processing
+	stop             chan error
+	done             chan struct{}
+	concurrencyLimit int
+	ctx              context.Context
+	opts             QueueOpts
+	wg               sync.WaitGroup
 }
 
 type JobOpts struct {
@@ -84,9 +88,9 @@ func NewQueue(name string, opts ...QueueOpts) *Queue {
 
 	queue := &Queue{
 		name: name,
-		done: make(chan struct{}),
+		stop: make(chan error, 1),
 		ctx:  context.Background(),
-		// wg:   sync.WaitGroup{},
+		wg:   sync.WaitGroup{},
 		opts: options,
 	}
 
@@ -94,6 +98,136 @@ func NewQueue(name string, opts ...QueueOpts) *Queue {
 
 	return queue
 }
+
+// process the actual job
+func (q *Queue) Process(cb func(job interface{}) error) {
+	q.wg.Add(1)
+	go func() {
+		for {
+			select {
+			case <-q.stop:
+				log.Println("STOOOOP !!")
+				defer q.wg.Done()
+				return
+			default:
+			}
+
+			// get next job to process
+			data := q.GetNextJob(q.name)
+			// call the callback func to give the user the data
+			err := cb(data)
+
+			if err == nil {
+				e := q.RemoveJob(queue(q.name).active, data)
+				if e != nil {
+					fmt.Println("Error (Remove job): ", e.Error())
+				}
+			} else {
+				// put the job at the end of the queue
+				q.opts.client.LPush(q.ctx, queue(q.name).active, data)
+			}
+
+			// if queue is empty sleep for 2 seconds, else 100ms
+			activeQLen, _ := q.Len()
+			if activeQLen == 0 {
+				time.Sleep(time.Second * 2)
+			} else {
+				time.Sleep(time.Millisecond * 100)
+			}
+		}
+	}()
+}
+
+// adds a job to the right queue
+func (q *Queue) Add(data interface{}, opts ...JobOpts) {
+	ops := JobOpts{}
+	if len(opts) >= 1 {
+		ops = opts[0]
+	}
+	delay := getCurrMilli() + ops.delay
+
+	dataToInsert := []interface{}{
+		q.EncodeJob(Job{
+			Payload: data,
+			Delay:   ops.delay,
+			Id:      newUuid(),
+		}),
+	}
+
+	q.wg.Add(1)
+	go func() {
+		defer q.wg.Done()
+		if ops.delay == 0 {
+			lcmd := q.opts.client.RPush(q.ctx, queue(q.name).active, dataToInsert)
+			if lcmd.Err() != nil {
+				log.Fatal("RPush Error: ", lcmd.Err().Error())
+				return
+			}
+		} else {
+			zcmd := q.opts.client.ZAdd(q.ctx, queue(q.name).delayed, &redis.Z{
+				Score:  float64(delay),
+				Member: dataToInsert[0],
+			})
+			if zcmd.Err() != nil {
+				log.Fatal("Zadd Error: ", zcmd.Err().Error())
+				return
+			}
+		}
+	}()
+}
+
+// returns the next job in the active queue, and checks for delayed jobs
+func (q *Queue) GetNextJob(qName string) interface{} {
+
+	// don't get and remove the job, just get it and if its successfully processed we remove it, manually
+	lcmd := q.opts.client.LRange(q.ctx, queue(q.name).active, 0, 0)
+
+	// check for delayed jobs and add them to the active queue if their time is up
+	checkForDelayedJob(q)
+
+	if len(lcmd.Val()) == 0 {
+		return ""
+	}
+
+	return lcmd.Val()[0]
+}
+
+// remove job from the queue
+func (q *Queue) RemoveJob(key string, job interface{}) error {
+	res := q.opts.client.LRem(q.ctx, key, 0, job)
+	return res.Err()
+}
+
+// stops the running workers
+func (q *Queue) Cancel() {
+	q.stop <- nil
+}
+
+// wait for the goroutines
+func (q *Queue) Wait() {
+	q.wg.Wait()
+}
+
+// returns the length of the active queue
+func (q *Queue) Len() (active int64, delayed int64) {
+	activeQueue := q.opts.client.LLen(q.ctx, queue(q.name).active)
+	delayedQueue := q.opts.client.ZCard(q.ctx, queue(q.name).delayed)
+
+	return activeQueue.Val(), delayedQueue.Val()
+}
+
+func (q *Queue) EncodeJob(data interface{}) []byte {
+	d, _ := json.Marshal(data)
+	return d
+}
+
+func (q *Queue) DecodeJob(data []byte) Job {
+	var v Job
+	json.Unmarshal(data, &v)
+	return v
+}
+
+// ####### Private methods #######
 
 func healthCheck(queue *Queue) {
 	go func() {
@@ -115,145 +249,41 @@ func healthCheck(queue *Queue) {
 	}()
 }
 
-// process the actual job
-func (q *Queue) process(cb func(job interface{}) error) {
-	go func() {
-		for {
-			select {
-			case <-q.stop:
-				// case <-q.done:
-				return
-			default:
-
-				data := q.getJobs(q.name)
-				err := cb(data)
-
-				if err == nil {
-					e := q.removeJob(queueName(q.name).active, data)
-					if e != nil {
-						fmt.Println("Remove job: ", e.Error())
-					}
-				} else {
-					// put the job at the end of the queue
-					q.opts.client.LPush(q.ctx, queueName(q.name).active, data)
-				}
-			}
-			// wait 500ms before looping again...
-			time.Sleep(time.Millisecond * 500)
-		}
-	}()
-}
-
-// remove job from the queue
-func (q *Queue) removeJob(key string, job interface{}) error {
-	res := q.opts.client.LRem(q.ctx, key, 0, job)
-	return res.Err()
-}
-
-// stops the running worker
-func (q *Queue) cancel() {
-	q.done <- struct{}{}
-}
-
-// pulls off jobs from the queue and process them
-func (q *Queue) getJobs(qName string) interface{} {
-
-	// don't get and remove the job, just get it and if its successfully processed we remove it, manually
-	lcmd := q.opts.client.LRange(q.ctx, queueName(q.name).active, 0, 0)
-
-	// check if the delayed job's time is up
-	checkForDelayedJob(q)
-
-	if len(lcmd.Val()) == 0 {
-		return ""
-	}
-
-	// fmt.Println("JOB: ", lcmd.Val())
-	return lcmd.Val()[0]
-}
-
 func checkForDelayedJob(q *Queue) {
-	delayedJob := q.opts.client.ZRangeWithScores(q.ctx, queueName(q.name).delayed, 0, 0)
-	if len(delayedJob.Val()) == 0 {
-		return
-	}
-	score := int64(delayedJob.Val()[0].Score)
-	member := delayedJob.Val()[0].Member
-	// data := delayedJob.Val()[0].Member.(string)
-	// job := decodeJob([]byte(data))
-	fmt.Println("Checking for delayed job...")
-	fmt.Println(score, getCurrMilli())
-
-	if getCurrMilli() >= score {
-		fmt.Println("Yeee, found a delayed !!")
-		q.opts.client.RPush(q.ctx, queueName(q.name).active, member)
-		q.opts.client.ZRem(q.ctx, queueName(q.name).delayed, member)
-	}
-}
-
-// adds a job to the right queue
-func (q *Queue) add(data interface{}, opts ...JobOpts) {
-	ops := JobOpts{}
-	if len(opts) >= 1 {
-		ops = opts[0]
-	}
-	delay := getCurrMilli() + ops.delay
-	// fmt.Println(currMilli + ops.delay)
-
-	dataToInsert := []interface{}{
-		encodeJob(Job{
-			Payload: data,
-			Delay:   ops.delay,
-			Id:      newUuid(),
-		}),
-	}
-
+	q.wg.Add(1)
 	go func() {
-		if ops.delay == 0 {
-			lcmd := q.opts.client.RPush(q.ctx, queueName(q.name).active, dataToInsert)
-			if lcmd.Err() != nil {
-				log.Println("RPush Error: ", lcmd.Err().Error())
-				return
-			}
-		} else {
-			zcmd := q.opts.client.ZAdd(q.ctx, queueName(q.name).delayed, &redis.Z{
-				Score:  float64(delay),
-				Member: dataToInsert[0],
-			})
-			if zcmd.Err() != nil {
-				log.Println("Zadd Error: ", zcmd.Err().Error())
-				return
-			}
+		defer q.wg.Done()
+		delayedJob := q.opts.client.ZRangeWithScores(q.ctx, queue(q.name).delayed, 0, 0)
+		if len(delayedJob.Val()) == 0 {
+			return
+		}
+		score := int64(delayedJob.Val()[0].Score)
+		member := delayedJob.Val()[0].Member
+		// data := delayedJob.Val()[0].Member.(string)
+		// job := decodeJob([]byte(data))
+		// fmt.Println("Checking for delayed job...")
+		// fmt.Println(score, getCurrMilli())
+
+		if getCurrMilli() >= score {
+			// fmt.Println("Found a delayed job.", member)
+			q.opts.client.RPush(q.ctx, queue(q.name).active, member)
+			q.opts.client.ZRem(q.ctx, queue(q.name).delayed, member)
 		}
 	}()
 }
 
-// Private methods
 func newUuid() string {
 	id := uuid.New()
 	return id.String()
-}
-
-func encodeJob(data interface{}) []byte {
-	d, _ := json.Marshal(data)
-	return d
-}
-
-func decodeJob(data []byte) Job {
-	var v Job
-	json.Unmarshal(data, &v)
-	return v
 }
 
 func getCurrMilli() int64 {
 	return time.Now().UnixNano() / 1000000
 }
 
-func queueName(qName string) queueTypes {
-	// queue
+func queue(qName string) queueTypes {
 	return queueTypes{
 		delayed: qName + ":delayed",
 		active:  qName + ":active",
-		failed:  qName + ":failed",
 	}
 }

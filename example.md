@@ -21,7 +21,7 @@ func main() {
 
 	emailsQueue := createQueue("emailsQueue")
 
-	emailsQueue.process(func(job interface{}) error {
+	emailsQueue.Process(func(job interface{}) error {
 		fmt.Println("Job to process: ", job)
 		return nil
 	})
@@ -32,7 +32,7 @@ func main() {
 	})
 
 	http.HandleFunc("/order", func(res http.ResponseWriter, req *http.Request) {
-		emailsQueue.add("{Delayed job data}", JobOpts{
+		emailsQueue.Add("{Delayed job data}", JobOpts{
 			delay: int64((time.Second * 7) / time.Millisecond),
 		})
 	})
