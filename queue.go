@@ -77,7 +77,7 @@ func (q *Queue) Process(cb func(job interface{}) error) {
 		for {
 			select {
 			case <-q.stop:
-				defer q.wg.Done()
+				q.wg.Done()
 				return
 			default:
 			}
@@ -200,20 +200,20 @@ func (q *Queue) DecodeJob(data []byte) Job {
 // ####### Private methods #######
 
 func healthCheck(queue *Queue) {
+	queue.wg.Add(1)
 	go func() {
 		ticker := time.NewTicker(time.Second * 2)
 		for {
 			select {
 			case <-queue.stop:
+				queue.wg.Done()
 				return
 			case <-ticker.C:
 				err := queue.opts.client.Ping(queue.ctx).Err()
 				if err != nil {
 					queue.stop <- err
 					fmt.Println("Unhealthy, stoping everything, (Error): ", err.Error())
-					return
 				}
-				// fmt.Println("everything is cool")
 			}
 		}
 	}()

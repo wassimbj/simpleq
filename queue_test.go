@@ -38,12 +38,17 @@ func TestAddQueue(t *testing.T) {
 			})
 		}
 
-		q.Wait()
+		// using q.wait() will wait forever, because its waiting for the health check too to stop,
+		// and health check doesn't stop until there is something wrong, or we call the .Cancel()
+		// so we sleep a bit to pretend that the healthcheck finished its work.
+		time.Sleep(time.Second)
 
 		activeQueue, delayedQueue := q.Len()
 		if activeQueue < 10 || delayedQueue < 3 {
 			t.Fail()
 		}
+
+		q.Cancel()
 	})
 }
 
@@ -62,15 +67,16 @@ func TestProcessQueue(t *testing.T) {
 			return nil
 		})
 
-		// using q.wait will keep the process running forever so won't benefit from that,
+		// same as above, using q.wait will keep the process running forever so won't benefit from that,
 		// just add a deadline to wait for the process for a bit before exec the above code
 
-		// deadline
-		time.Sleep(time.Second * 7)
+		// deadline, of 6 secs to wait for the delayed jobs to move to the active queue.
+		time.Sleep(time.Second * 6)
 		// 13 = active jobs + delayed jobs added in the previous test
 		if count < 13 {
 			t.Fail()
 		}
+
 		q.Cancel()
 
 	})
