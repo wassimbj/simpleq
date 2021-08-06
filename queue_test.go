@@ -41,7 +41,7 @@ func TestAddQueue(t *testing.T) {
 		q.Wait()
 
 		activeQueue, delayedQueue := q.Len()
-		if activeQueue < 10 && delayedQueue < 3 {
+		if activeQueue < 10 || delayedQueue < 3 {
 			t.Fail()
 		}
 	})
@@ -63,9 +63,9 @@ func TestProcessQueue(t *testing.T) {
 		})
 
 		// using q.wait will keep the process running forever so won't benefit from that,
-		// just add a timeout to wait for the process for a bit before exec the above code
+		// just add a deadline to wait for the process for a bit before exec the above code
 
-		// timeout
+		// deadline
 		time.Sleep(time.Second * 7)
 		// 13 = active jobs + delayed jobs added in the previous test
 		if count < 13 {
