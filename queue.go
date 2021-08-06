@@ -12,47 +12,18 @@ import (
 	"github.com/google/uuid"
 )
 
-/*
-
-* The big picture of how the task queue works
-
-!				 									--> failed => move the job back to the active queue
-?	                 -- > active		  /
-?                  /				 \	    /
-?   job -> queue ->             ---->
-?                  \           /	    \
-?                   -- > delayed	  	  \
-*													--> completed => remove the job
-
-! How everything works
-- Jobs are processed at least once.
-- if job is completed, remove it
-- failed queue is for stats, maybe implement it in the futute.if job fail re-queue to the active queue.
-- check redis each 2 seconds, if something is wrong stop everything.
-- run a for loop to check for new jobs to process, and at the same time check for delayed job,
-if there is one put it in the active queue to process it.
-
-
-! TODO:
-- Cron Job: a cron job is simply a delayed job that just doesn't get deleted,
-it gets requeued over and over again with a new timestamp.
-
-*/
-
 type QueueOpts struct {
 	client *redis.Client
 }
 
 type Queue struct {
-	name        string
-	workerLimit int
+	name string
 	// stop processing
-	stop             chan error
-	done             chan struct{}
-	concurrencyLimit int
-	ctx              context.Context
-	opts             QueueOpts
-	wg               sync.WaitGroup
+	stop chan error
+	done chan struct{}
+	ctx  context.Context
+	opts QueueOpts
+	wg   sync.WaitGroup
 }
 
 type JobOpts struct {
@@ -106,7 +77,6 @@ func (q *Queue) Process(cb func(job interface{}) error) {
 		for {
 			select {
 			case <-q.stop:
-				log.Println("STOOOOP !!")
 				defer q.wg.Done()
 				return
 			default:

@@ -7,6 +7,21 @@
 go get https://github.com/wassimbj/simpleq
 ```
 
+### how it works
+```go
+/*
+
+* The big picture of how the task queue works
+
+                                       --> failed => re-queue the job to the active queue
+                  -- > active       /
+                /                  /
+job -> queue ->               ---> 
+                \                  \
+                 -- > delayed       \  --> completed => remove the job
+
+*/
+```
 
 ### Example
 
