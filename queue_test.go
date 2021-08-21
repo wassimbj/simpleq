@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"strconv"
 	"testing"
 	"time"
@@ -25,7 +27,7 @@ func TestAddQueue(t *testing.T) {
 		})
 
 		// flush all to get the expected 10
-		q.opts.client.FlushAll(q.ctx)
+		q.opts.client.FlushAll(context.Background())
 
 		for i := 1; i <= 10; i++ {
 			q.Add("Data - " + strconv.Itoa(i))
@@ -38,7 +40,7 @@ func TestAddQueue(t *testing.T) {
 			})
 		}
 
-		// using q.wait() will wait forever, because its waiting for the health check too to stop,
+		// using q.wait() will wait forever, because its waiting for the health check to stop too,
 		// and health check doesn't stop until there is something wrong, or we call the .Cancel()
 		// so we sleep a bit to pretend that the healthcheck finished its work.
 		time.Sleep(time.Second)
@@ -59,13 +61,15 @@ func TestProcessQueue(t *testing.T) {
 		})
 
 		var count int64 = 0
-		q.Process(func(job interface{}) error {
-			// fmt.Println("Processing: ", job)
-			if job != "" {
-				count++
-			}
-			return nil
-		})
+		for i := 0; i < 5; i++ {
+			q.Process(func(job interface{}) error {
+				fmt.Println("Processing: ", job)
+				if job != "" {
+					count++
+				}
+				return nil
+			})
+		}
 
 		// same as above, using q.wait will keep the process running forever so won't benefit from that,
 		// just add a deadline to wait for the process for a bit before exec the above code

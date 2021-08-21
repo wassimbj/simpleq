@@ -20,8 +20,8 @@ type Queue struct {
 	name string
 	// stop processing
 	stop chan error
+	mx   *sync.Mutex
 	done chan struct{}
-	ctx  context.Context
 	opts QueueOpts
 	wg   sync.WaitGroup
 }
@@ -60,8 +60,8 @@ func NewQueue(name string, opts ...QueueOpts) *Queue {
 	queue := &Queue{
 		name: name,
 		stop: make(chan error, 1),
-		ctx:  context.Background(),
 		wg:   sync.WaitGroup{},
+		mx:   &sync.Mutex{},
 		opts: options,
 	}
 
@@ -82,9 +82,10 @@ func (q *Queue) Process(cb func(job interface{}) error) {
 			default:
 			}
 
+			q.mx.Lock() // mutex
 			// get next job to process
 			data := q.GetNextJob(q.name)
-			// call the callback func to give the user the data
+			// callback func to give the user the data
 			err := cb(data)
 
 			if err == nil {
@@ -94,7 +95,7 @@ func (q *Queue) Process(cb func(job interface{}) error) {
 				}
 			} else {
 				// put the job at the end of the queue
-				q.opts.client.LPush(q.ctx, queue(q.name).active, data)
+				q.opts.client.LPush(context.Background(), queue(q.name).active, data)
 			}
 
 			// if queue is empty sleep for 2 seconds, else 100ms
@@ -104,6 +105,7 @@ func (q *Queue) Process(cb func(job interface{}) error) {
 			} else {
 				time.Sleep(time.Millisecond * 100)
 			}
+			q.mx.Unlock() // mutex
 		}
 	}()
 }
@@ -126,15 +128,20 @@ func (q *Queue) Add(data interface{}, opts ...JobOpts) {
 
 	q.wg.Add(1)
 	go func() {
-		defer q.wg.Done()
+		q.mx.Lock()
+		defer func() {
+			q.wg.Done()
+			q.mx.Unlock()
+		}()
+		// q.wg.Done()
 		if ops.delay == 0 {
-			lcmd := q.opts.client.RPush(q.ctx, queue(q.name).active, dataToInsert)
+			lcmd := q.opts.client.RPush(context.Background(), queue(q.name).active, dataToInsert)
 			if lcmd.Err() != nil {
 				log.Fatal("RPush Error: ", lcmd.Err().Error())
 				return
 			}
 		} else {
-			zcmd := q.opts.client.ZAdd(q.ctx, queue(q.name).delayed, &redis.Z{
+			zcmd := q.opts.client.ZAdd(context.Background(), queue(q.name).delayed, &redis.Z{
 				Score:  float64(delay),
 				Member: dataToInsert[0],
 			})
@@ -149,8 +156,8 @@ func (q *Queue) Add(data interface{}, opts ...JobOpts) {
 // returns the next job in the active queue, and checks for delayed jobs
 func (q *Queue) GetNextJob(qName string) interface{} {
 
-	// don't get and remove the job, just get it and if its successfully processed we remove it, manually
-	lcmd := q.opts.client.LRange(q.ctx, queue(q.name).active, 0, 0)
+	// don't get and remove the job (BLPOP), just get it and if its successfully processed we remove it, manually
+	lcmd := q.opts.client.LRange(context.Background(), queue(q.name).active, 0, 0)
 
 	// check for delayed jobs and add them to the active queue if their time is up
 	checkForDelayedJob(q)
@@ -164,7 +171,7 @@ func (q *Queue) GetNextJob(qName string) interface{} {
 
 // remove job from the queue
 func (q *Queue) RemoveJob(key string, job interface{}) error {
-	res := q.opts.client.LRem(q.ctx, key, 0, job)
+	res := q.opts.client.LRem(context.Background(), key, 0, job)
 	return res.Err()
 }
 
@@ -180,8 +187,8 @@ func (q *Queue) Wait() {
 
 // returns the length of the active queue
 func (q *Queue) Len() (active int64, delayed int64) {
-	activeQueue := q.opts.client.LLen(q.ctx, queue(q.name).active)
-	delayedQueue := q.opts.client.ZCard(q.ctx, queue(q.name).delayed)
+	activeQueue := q.opts.client.LLen(context.Background(), queue(q.name).active)
+	delayedQueue := q.opts.client.ZCard(context.Background(), queue(q.name).delayed)
 
 	return activeQueue.Val(), delayedQueue.Val()
 }
@@ -209,7 +216,7 @@ func healthCheck(queue *Queue) {
 				queue.wg.Done()
 				return
 			case <-ticker.C:
-				err := queue.opts.client.Ping(queue.ctx).Err()
+				err := queue.opts.client.Ping(context.Background()).Err()
 				if err != nil {
 					queue.stop <- err
 					fmt.Println("Unhealthy, stoping everything, (Error): ", err.Error())
@@ -223,21 +230,17 @@ func checkForDelayedJob(q *Queue) {
 	q.wg.Add(1)
 	go func() {
 		defer q.wg.Done()
-		delayedJob := q.opts.client.ZRangeWithScores(q.ctx, queue(q.name).delayed, 0, 0)
+		delayedJob := q.opts.client.ZRangeWithScores(context.Background(), queue(q.name).delayed, 0, 0)
 		if len(delayedJob.Val()) == 0 {
 			return
 		}
 		score := int64(delayedJob.Val()[0].Score)
 		member := delayedJob.Val()[0].Member
-		// data := delayedJob.Val()[0].Member.(string)
-		// job := decodeJob([]byte(data))
-		// fmt.Println("Checking for delayed job...")
-		// fmt.Println(score, getCurrMilli())
 
 		if getCurrMilli() >= score {
-			// fmt.Println("Found a delayed job.", member)
-			q.opts.client.RPush(q.ctx, queue(q.name).active, member)
-			q.opts.client.ZRem(q.ctx, queue(q.name).delayed, member)
+			// Found a delayed job
+			q.opts.client.RPush(context.Background(), queue(q.name).active, member)
+			q.opts.client.ZRem(context.Background(), queue(q.name).delayed, member)
 		}
 	}()
 }
