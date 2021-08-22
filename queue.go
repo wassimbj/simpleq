@@ -35,6 +35,9 @@ type queueTypes struct {
 	delayed, active, failed string
 }
 
+type queueLen struct {
+	delayed, active, failed int64
+}
 type Job struct {
 	Payload interface{}
 	Delay   int64
@@ -81,6 +84,11 @@ func (q *Queue) Process(cb func(job interface{}) error) {
 				return
 			default:
 			}
+			qLen := q.Len()
+			// if queue is empty sleep for a second
+			if qLen.active == 0 {
+				time.Sleep(time.Second * 3)
+			}
 
 			q.mx.Lock() // mutex
 			// get next job to process
@@ -95,15 +103,7 @@ func (q *Queue) Process(cb func(job interface{}) error) {
 				}
 			} else {
 				// put the job at the end of the queue
-				q.opts.client.LPush(context.Background(), queue(q.name).active, data)
-			}
-
-			// if queue is empty sleep for 2 seconds, else 100ms
-			activeQLen, _ := q.Len()
-			if activeQLen == 0 {
-				time.Sleep(time.Second * 2)
-			} else {
-				time.Sleep(time.Millisecond * 100)
+				requeueJob(q, data)
 			}
 			q.mx.Unlock() // mutex
 		}
@@ -130,10 +130,10 @@ func (q *Queue) Add(data interface{}, opts ...JobOpts) {
 	go func() {
 		q.mx.Lock()
 		defer func() {
-			q.wg.Done()
 			q.mx.Unlock()
+			q.wg.Done()
 		}()
-		// q.wg.Done()
+
 		if ops.delay == 0 {
 			lcmd := q.opts.client.RPush(context.Background(), queue(q.name).active, dataToInsert)
 			if lcmd.Err() != nil {
@@ -157,16 +157,15 @@ func (q *Queue) Add(data interface{}, opts ...JobOpts) {
 func (q *Queue) GetNextJob(qName string) interface{} {
 
 	// don't get and remove the job (BLPOP), just get it and if its successfully processed we remove it, manually
-	lcmd := q.opts.client.LRange(context.Background(), queue(q.name).active, 0, 0)
+	licmd := q.opts.client.LIndex(context.Background(), queue(q.name).active, 0)
 
 	// check for delayed jobs and add them to the active queue if their time is up
 	checkForDelayedJob(q)
 
-	if len(lcmd.Val()) == 0 {
+	if licmd.Val() == "" {
 		return ""
 	}
-
-	return lcmd.Val()[0]
+	return licmd.Val()
 }
 
 // remove job from the queue
@@ -186,11 +185,15 @@ func (q *Queue) Wait() {
 }
 
 // returns the length of the active queue
-func (q *Queue) Len() (active int64, delayed int64) {
+func (q *Queue) Len() queueLen {
 	activeQueue := q.opts.client.LLen(context.Background(), queue(q.name).active)
 	delayedQueue := q.opts.client.ZCard(context.Background(), queue(q.name).delayed)
 
-	return activeQueue.Val(), delayedQueue.Val()
+	return queueLen{
+		delayed: delayedQueue.Val(),
+		active:  activeQueue.Val(),
+	}
+	// return activeQueue.Val(), delayedQueue.Val()
 }
 
 func (q *Queue) EncodeJob(data interface{}) []byte {
@@ -205,6 +208,14 @@ func (q *Queue) DecodeJob(data []byte) Job {
 }
 
 // ####### Private methods #######
+
+func requeueJob(q *Queue, job interface{}) {
+	pipe := q.opts.client.TxPipeline()
+	pipe.LRem(context.Background(), queue(q.name).active, 0, job)
+	pipe.RPush(context.Background(), queue(q.name).active, job)
+	pipe.Exec(context.Background())
+
+}
 
 func healthCheck(queue *Queue) {
 	queue.wg.Add(1)
@@ -239,8 +250,10 @@ func checkForDelayedJob(q *Queue) {
 
 		if getCurrMilli() >= score {
 			// Found a delayed job
-			q.opts.client.RPush(context.Background(), queue(q.name).active, member)
-			q.opts.client.ZRem(context.Background(), queue(q.name).delayed, member)
+			pipe := q.opts.client.TxPipeline()
+			pipe.RPush(context.Background(), queue(q.name).active, member)
+			pipe.ZRem(context.Background(), queue(q.name).delayed, member)
+			pipe.Exec(context.Background())
 		}
 	}()
 }
