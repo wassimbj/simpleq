@@ -12,8 +12,9 @@ go get https://github.com/wassimbj/simpleq
 /*
 
 * The big picture of how the task queue works
-
-                                       --> failed => re-queue the job to the active queue
+                           ← ← ← ← ← ← ← ← ← ← ←
+                          ↓                    ↑
+                          ↓            --> failed => re-queue the job to the active queue
                   -- > active       /
                 /                  /
 job -> queue ->               ---> 
